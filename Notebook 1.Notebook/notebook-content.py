@@ -35,27 +35,50 @@
 
 # CELL ********************
 
+from pyspark.sql.functions import current_timestamp, lit
+from pyspark.sql.utils import AnalysisException
 
-def load_bronze(file_name, table_name, source_system):
-    
-    df = spark.read.format("csv") \
-        .option("header", "true") \
-        .option("inferSchema", "true") \
-        .load(f"Files/{file_name}")
-    
+
+class BronzeLoadError(Exception):
+    """Raised when a bronze table cannot be loaded from its source file."""
+
+
+def load_bronze(file_name, table_name, source_system, pipeline_run_id):
+
+    path = f"Files/{file_name}"
+
+    try:
+        df = spark.read.format("csv") \
+            .option("header", "true") \
+            .option("inferSchema", "true") \
+            .option("mode", "FAILFAST") \
+            .load(path)
+    except AnalysisException as exc:
+        raise BronzeLoadError(
+            f"Cannot read source file {path} for table {table_name}: {exc}"
+        ) from exc
+
+    if not df.columns:
+        raise BronzeLoadError(f"Source file {path} has no columns; refusing to overwrite {table_name}")
+
     df = df.withColumn("source_system", lit(source_system)) \
            .withColumn("source_file_name", lit(file_name)) \
            .withColumn("ingestion_timestamp", current_timestamp()) \
-           .withColumn("pipeline_run_id", lit("run_001"))
-    
-    df.write.format("delta") \
-        .mode("overwrite") \
-        .saveAsTable(table_name)
-    
-    print(f"{table_name} loaded successfully ✅")
+           .withColumn("pipeline_run_id", lit(pipeline_run_id))
 
+    try:
+        df.write.format("delta") \
+            .mode("overwrite") \
+            .saveAsTable(table_name)
+    except Exception as exc:
+        raise BronzeLoadError(f"Failed to write table {table_name} from {path}: {exc}") from exc
 
+    row_count = spark.table(table_name).count()
+    if row_count == 0:
+        raise BronzeLoadError(f"Table {table_name} was written from {path} but contains no rows")
 
+    print(f"{table_name} loaded successfully ({row_count} rows)")
+    return row_count
 
 
 # METADATA ********************
@@ -67,40 +90,30 @@ def load_bronze(file_name, table_name, source_system):
 
 # CELL ********************
 
-# 1. CRM Customers
-# load_bronze(
-#     "crm_customers.csv",
-#     "bronze_crm_customers",
-#     "CRM"
-# )
+import uuid
 
-# 2. CRM Interactions
-load_bronze(
-    "crm_interactions.csv",
-    "bronze_crm_interactions",
-    "CRM"
-)
+BRONZE_SOURCES = [
+    # ("crm_customers.csv", "bronze_crm_customers", "CRM"),
+    ("crm_interactions.csv", "bronze_crm_interactions", "CRM"),
+    ("transactions.csv", "bronze_transactions", "Transactions"),
+    ("kyc_records.csv", "bronze_kyc_records", "KYC"),
+    ("relationship_managers.csv", "bronze_relationship_managers", "Reference"),
+]
 
-# 3. Transactions
-load_bronze(
-    "transactions.csv",
-    "bronze_transactions",
-    "Transactions"
-)
+pipeline_run_id = str(uuid.uuid4())
+print(f"pipeline_run_id={pipeline_run_id}")
 
-# 4. KYC Records
-load_bronze(
-    "kyc_records.csv",
-    "bronze_kyc_records",
-    "KYC"
-)
+failures = {}
+for file_name, table_name, source_system in BRONZE_SOURCES:
+    try:
+        load_bronze(file_name, table_name, source_system, pipeline_run_id)
+    except BronzeLoadError as exc:
+        failures[table_name] = str(exc)
+        print(f"{table_name} failed: {exc}")
 
-# 5. Relationship Managers
-load_bronze(
-    "relationship_managers.csv",
-    "bronze_relationship_managers",
-    "Reference"
-)
+if failures:
+    details = "; ".join(f"{table}: {message}" for table, message in failures.items())
+    raise BronzeLoadError(f"{len(failures)} of {len(BRONZE_SOURCES)} bronze loads failed -> {details}")
 
 
 # METADATA ********************

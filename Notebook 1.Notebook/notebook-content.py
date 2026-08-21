@@ -35,24 +35,51 @@
 
 # CELL ********************
 
+from pyspark.sql import DataFrame
 from pyspark.sql.functions import current_timestamp, lit
 from pyspark.sql.utils import AnalysisException
+
+FILES_ROOT = "Files"
 
 
 class BronzeLoadError(Exception):
     """Raised when a bronze table cannot be loaded from its source file."""
 
 
+def read_csv(path: str) -> DataFrame:
+    return (
+        spark.read.format("csv")
+        .option("header", "true")
+        .option("inferSchema", "true")
+        .option("mode", "FAILFAST")
+        .load(path)
+    )
+
+
+def add_audit_columns(
+    df: DataFrame,
+    source_system: str,
+    file_name: str,
+    pipeline_run_id: str,
+) -> DataFrame:
+    return (
+        df.withColumn("source_system", lit(source_system))
+        .withColumn("source_file_name", lit(file_name))
+        .withColumn("ingestion_timestamp", current_timestamp())
+        .withColumn("pipeline_run_id", lit(pipeline_run_id))
+    )
+
+
+def write_delta(df: DataFrame, table_name: str, mode: str = "overwrite") -> None:
+    df.write.format("delta").mode(mode).saveAsTable(table_name)
+
+
 def load_bronze(file_name, table_name, source_system, pipeline_run_id):
 
-    path = f"Files/{file_name}"
+    path = f"{FILES_ROOT}/{file_name}"
 
     try:
-        df = spark.read.format("csv") \
-            .option("header", "true") \
-            .option("inferSchema", "true") \
-            .option("mode", "FAILFAST") \
-            .load(path)
+        df = read_csv(path)
     except AnalysisException as exc:
         raise BronzeLoadError(
             f"Cannot read source file {path} for table {table_name}: {exc}"
@@ -61,15 +88,10 @@ def load_bronze(file_name, table_name, source_system, pipeline_run_id):
     if not df.columns:
         raise BronzeLoadError(f"Source file {path} has no columns; refusing to overwrite {table_name}")
 
-    df = df.withColumn("source_system", lit(source_system)) \
-           .withColumn("source_file_name", lit(file_name)) \
-           .withColumn("ingestion_timestamp", current_timestamp()) \
-           .withColumn("pipeline_run_id", lit(pipeline_run_id))
+    df = add_audit_columns(df, source_system, file_name, pipeline_run_id)
 
     try:
-        df.write.format("delta") \
-            .mode("overwrite") \
-            .saveAsTable(table_name)
+        write_delta(df, table_name)
     except Exception as exc:
         raise BronzeLoadError(f"Failed to write table {table_name} from {path}: {exc}") from exc
 

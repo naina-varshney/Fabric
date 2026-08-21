@@ -1,0 +1,3 @@
+# Tooling for the unit tests in tests/ (no Spark or Fabric connection needed).
+pytest>=8.0,<10
+sqlglot>=25.0,<31

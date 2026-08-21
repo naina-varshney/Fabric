@@ -1,1 +1,17 @@
+# Fabric — cust360
 
+Microsoft Fabric workspace artifacts: a bronze ingestion notebook, the
+`cust360_lakehouse` lakehouse and the `cust360_warehouse` warehouse
+(`c360` schema, build procedure and row level security function).
+
+## Tests
+
+Unit tests run locally without Spark, a Fabric workspace or a SQL endpoint:
+the notebook's functions are executed against a recording Spark double and the
+warehouse T-SQL is parsed with sqlglot.
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+```
